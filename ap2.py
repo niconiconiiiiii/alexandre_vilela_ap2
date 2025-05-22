@@ -1,54 +1,56 @@
+
 import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime
 from pathlib import Path
-
-
+from requests.exceptions import HTTPError
 
 # Configurações
-token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzQ3OTEyODc0LCJpYXQiOjE3NDUzMjA4NzQsImp0aSI6ImQxM2MxOWNlMDA3YzRjMTRiZDRmYjkxZGE2MGQ4N2RmIiwidXNlcl9pZCI6NjV9.1C50rycumEgTVv3eTK6qUj99vUqvxvtZVyO-wLPOVoc"
+token = "eyJhbGciOiJIUzI1NiIsInR5cGVbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzUwNTA2NTE5LCJpYXQiOjE3NDc5MTQ0OTMsImp0aSI6ImI4ZmMyM2ExNWY5YjRkMzQ4YmM2YjVlNDg2Y2M3NjlmIiwidXNlcl9pZCI6NjV9.5stcchj5veUJ_7_2ioIPuYlOleUfYLKphYKGk8h3KzE"
 headers = {"Authorization": f"JWT {token}"}
 url = "https://laboratoriodefinancas.com/api/v1/balanco"
 
-# Pasta de saída: Área de Trabalho com timestamp
+# Pasta de saída
 output_dir = Path.home() / 'Desktop'
 output_file = output_dir / f"comparativo_indicadores_{datetime.now():%Y%m%d_%H%M}.xlsx"
 
-# Lista de empresas e período
+# Empresas e período
 tickers = ["JBSS3", "MRFG3", "BRFS3", "BEEF3"]
 periodo = "20244T"
 
-# Função para buscar balanço
 def fetch_balanco(ticker, ano_tri):
-    resp = requests.get(url, headers=headers, params={"ticker": ticker, "ano_tri": ano_tri})
-    resp.raise_for_status()
+    """Tenta buscar o balanço; retorna DataFrame ou None se não autorizado ou sem dados."""
+    try:
+        resp = requests.get(url, headers=headers, params={"ticker": ticker, "ano_tri": ano_tri})
+        resp.raise_for_status()
+    except HTTPError as e:
+        if e.response.status_code == 401:
+            print(f"⚠️ Não autorizado para {ticker}.")
+            return None
+        else:
+            raise
     dados = resp.json().get("dados", [])
     if not dados:
-        raise ValueError(f"Nenhum dado para {ticker} no período {ano_tri}")
+        print(f"⚠️ Sem dados para {ticker} no período {ano_tri}.")
+        return None
     return pd.DataFrame(dados[0]["balanco"])
 
-# Função flexível de extração
-def get_valor(df, *keys):
-    for key in keys:
-        mask = df['descricao'].str.contains(key, case=False, na=False)
+def get_valor(df, *chaves):
+    for chave in chaves:
+        mask = df['descricao'].str.contains(chave, case=False, na=False)
         if mask.any():
             return df.loc[mask, 'valor'].iloc[0]
     return np.nan
 
-# Cálculo seguro
 def safe_ratio(num, den, dias=False):
     if pd.isna(num) or pd.isna(den) or den == 0:
         return np.nan
     r = num / den
     return r * 360 if dias else r
 
-# Calcula indicadores a partir do balanço
-# EVA = NOPAT - (WACC * Capital Investido)
-# onde usamos Capital Investido = Ativo Total (AT)
-
 def calcula_indicadores(df):
-    # Extrair contas
+    # Extrai contas necessárias
     AC = get_valor(df, "Ativo Circulante")
     PC = get_valor(df, "Passivo Circulante")
     Estoque = get_valor(df, "Estoque", "Estoques")
@@ -66,102 +68,74 @@ def calcula_indicadores(df):
     AT = get_valor(df, "Ativo Total")
     PT = get_valor(df, "Passivo Total")
     PL = get_valor(df, "Patrimônio Líquido")
-    AP = get_valor(df, "Ativo Permanente")
     DF = get_valor(df, "Despesa Financeira Líquida", "Despesas Financeiras")
     BT = get_valor(df, "Benefício Tributário da Dívida", "BT Dívida")
     IR = get_valor(df, "IR Corrente")
-    LAIR = get_valor(df, "LAIR")  # Lucro Antes IR/CSLL
+    LAIR = get_valor(df, "LAIR")  # Lucro antes IR/CSLL
 
-    # Indicadores de liquidez
-    CCL = AC - PC
-    LC = safe_ratio(AC, PC)
-    LS = safe_ratio(AC - Estoque - DA, PC)
-    LI = safe_ratio(Disponivel, PC)
-    LG = safe_ratio(AC + ARLP, PC + PNC)
+    # Liquidez, ciclos e capital de giro (não usados na seleção final, mas mantidos para referência)
+    # ...
 
-    # Ciclos
-    PME = safe_ratio(Estoque, CMV, dias=True)
-    GE = safe_ratio(360, PME)
-    PMRV = safe_ratio(Clientes, Receita, dias=True)
-    PMPF = safe_ratio(Fornecedores, Compras, dias=True)
-    CO = PMRV + PME
-    CF = CO - PMPF
-
-    # Capital de Giro
-    CE = PME
-    ACO = AC - Disponivel - Aplic
-    PCO = PC - Emprest
-    NCG = ACO - PCO
-    ACF = Disponivel + Aplic
-    PCF = Emprest
-    ST = ACF - PCF
-
-    # Estrutura de capital
-    Rel_Capitais = safe_ratio(PT, PL)
-    Endiv_Geral = safe_ratio(PT, PT + PL)
-    Solv = safe_ratio(AT, PT)
-    Comp_Endiv = safe_ratio(PC, PT)
-    Imob_PL = safe_ratio(AP, PL)
-
-    # Custo da dívida líquida de impostos
-    Ki = safe_ratio(DF, PC + PCO)
+    # Cálculo de WACC simplificado
+    Ki = safe_ratio(DF, PC + (PC - Emprest))
     DFL = DF - BT
     Alq_IR_CSLL = safe_ratio(IR, LAIR)
+    Wi = safe_ratio(PT, PT + PL)
+    We = 1 - (Wi if not pd.isna(Wi) else 0)
+    CMPC = Wi * Ki + We * Alq_IR_CSLL
 
-    # Pesos e WACC
-    Wi = safe_ratio(PT, (PT + PL))
-    We = 1 - Wi
-    Ke = Alq_IR_CSLL  # suposição simplificada
-    CMPC = Wi * Ki + We * Ke
-
-    # Resultado Operacional e retorno
+    # EBITDA, NOPAT, ROE e EVA
     EBITDA = safe_ratio(get_valor(df, "Margem EBITDA") * Receita, 1)
-    EBIT = EBITDA - get_valor(df, "Depreciação", "Amortização")
-    NOPAT = EBIT - IR  # Lucro após IR
-    ROI = safe_ratio(NOPAT, (PT + PL))
-    ROE = safe_ratio(get_valor(df, "Lucro Líquido"), PL)
-    GAF = safe_ratio(ROE, ROI)
+    Dep = get_valor(df, "Depreciação", "Amortização")
+    EBIT = EBITDA - Dep
+    NOPAT = EBIT - IR
 
-    # Cálculo do EVA
+    ROE = safe_ratio(get_valor(df, "Lucro Líquido"), PL)
     EVA = NOPAT - (CMPC * AT)
 
-    return {
-        'CCL': CCL, 'LC': LC, 'LS': LS, 'LI': LI, 'LG': LG,
-        'PME': PME, 'GE': GE, 'PMRV': PMRV, 'PMPF': PMPF,
-        'CO': CO, 'CF': CF, 'CE': CE,
-        'ACO': ACO, 'PCO': PCO, 'NCG': NCG,
-        'ACF': ACF, 'PCF': PCF, 'ST': ST,
-        'Rel_Capitais': Rel_Capitais, 'Endiv_Geral': Endiv_Geral,
-        'Solv': Solv, 'Comp_Endiv': Comp_Endiv, 'Imob_PL': Imob_PL,
-        'Ki': Ki, 'DFL': DFL, 'BT': BT, 'Alq_IR_CSLL': Alq_IR_CSLL,
-        'Wi': Wi, 'We': We, 'CMPC': CMPC,
-        'EBITDA': EBITDA, 'EBIT': EBIT, 'NOPAT': NOPAT,
-        'ROI': ROI, 'ROE': ROE, 'GAF': GAF,
-        'EVA': EVA
-    }
+    return {'Ticker': None, 'ROE': ROE, 'EVA': EVA}
 
+# Processamento principal
+resultados = []
+for tk in tickers:
+    bal = fetch_balanco(tk, periodo)
+    if bal is None:
+        continue
+    ind = calcula_indicadores(bal)
+    ind['Ticker'] = tk
+    resultados.append(ind)
 
-# Processamento
-df_list = []
-for t in tickers:
-    try:
-        df_bal = fetch_balanco(t, periodo)
-        ind = calcula_indicadores(df_bal)
-        ind['Ticker'] = t
-        df_list.append(ind)
-    except Exception as e:
-        print(f"Erro em {t}: {e}")
+df_res = pd.DataFrame(resultados)
 
-# Exportação com formatação
-df_res = pd.DataFrame(df_list)
+# Exporta para Excel
 with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
     df_res.to_excel(writer, sheet_name='Indicadores', index=False)
     wb = writer.book
     ws = writer.sheets['Indicadores']
-    fmt_header = wb.add_format({'bold': True, 'bg_color': '#DCE6F1', 'border': 1})
-    for col_num, value in enumerate(df_res.columns.values):
-        ws.write(0, col_num, value, fmt_header)
+    header_fmt = wb.add_format({'bold': True, 'bg_color': '#DCE6F1', 'border': 1})
+    for col_num, col in enumerate(df_res.columns):
+        ws.write(0, col_num, col, header_fmt)
         ws.set_column(col_num, col_num, 15)
 
 print(f"Comparativo salvo em: {output_file}")
-print(df_res.shape, "- Tickers processados:", [d['Ticker'] for d in df_list])
+
+# Seleção do melhor: primeiro tenta pelo maior EVA, com fallback para ROE
+best = None
+df_eva = df_res.dropna(subset=['EVA'])
+if not df_eva.empty:
+    best = df_eva.loc[df_eva['EVA'].idxmax()]
+    crit = 'EVA'
+elif 'ROE' in df_res.columns:
+    df_roe = df_res.dropna(subset=['ROE'])
+    if not df_roe.empty:
+        best = df_roe.loc[df_roe['ROE'].idxmax()]
+        crit = 'ROE'
+
+if best is None:
+    print("# Não foi possível determinar a melhor empresa (sem EVA ou ROE válidos).")
+else:
+    ticker_best = best['Ticker']
+    val_best = best[crit]
+    # comentando com jogo da velha
+    print(f"# A melhor empresa segundo {crit} é {ticker_best} com {crit} = {val_best:.2f}")
+
