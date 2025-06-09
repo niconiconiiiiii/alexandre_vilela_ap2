@@ -1,7 +1,3 @@
-
-# =========================
-# 1. Imports e Configurações
-# =========================
 import pandas as pd
 import requests
 import matplotlib.pyplot as plt
@@ -11,9 +7,9 @@ from datetime import datetime
 pio.renderers.default = "browser"
 import dash
 from dash import dcc, html, Input, Output
-# =========================
-# 2. Funções de Coleta de Dados
-# =========================
+pio.templates.default = "plotly_dark"
+
+
 def balanco(ticker, trimestre):
     token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzUwOTM5MDkxLCJpYXQiOjE3NDgzNDcwODIsImp0aSI6IjAyNzZjMTQ3Y2I1ZTQ1OWViYjI1YzY1MDgyMDViMThkIiwidXNlcl9pZCI6NjV9.onCBVUskjQJHWCBJ2P-T27zfydezZwtLfPR7bYUFwNU"
     headers = {'Authorization': 'JWT {}'.format(token)}
@@ -61,9 +57,7 @@ def valor_acao(df):
         'preco_fim' : preco_fim,
         'lucro_acao': lucro_acao
     }
-# =========================
-# 3. Funções de Extração Contábil
-# =========================
+
 def valor_contabil(df, conta, descricao):
     filtro_conta = df['conta'].str.contains(conta, case=False)
     filtro_descricao = df['descricao'].str.contains(descricao, case=False)
@@ -75,9 +69,6 @@ def valor_contabil_2(df, conta, descricao):
     filtro_descricao = df['descricao'].str.contains(descricao, case=False)
     valor = sum(df[filtro_conta & filtro_descricao]['valor'].values)
     return valor
-# =========================
-# 4. Funções de Cálculo de Índices
-# =========================
 
 def indices_basicos(df):
     Ativo_C = valor_contabil(df, '^1.0', '^ativo cir')
@@ -148,6 +139,18 @@ def indices_basicos(df):
         'Amortizacao'        : Amortizacao,
         'Lucro_Liquido'      : Lucro_Liquido,
         'Ke'                 : Ke
+    }
+
+
+def indices_dividas(indices_basicos):
+    Divida_Terceiros = indices_basicos["POn"]
+    Divida_Acionistas = indices_basicos["Patrimonio_L"]
+    Lucro_Liquido = indices_basicos["Lucro_Liquido"]
+
+    return {
+        'Divida_Terceiros' : Divida_Terceiros,
+        'Divida_Acionistas': Divida_Acionistas,
+        'Lucro_Liquido'    : Lucro_Liquido
     }
 
 def indices_liquidez(indices_basicos):
@@ -337,11 +340,10 @@ def indices_rentabilidade(indices_basicos):
 def indices_valor_agregado(indices_basicos, indices_juros, indices_rentabilidade):
     Custo_MPC = indices_juros['Custo_MPC']
     Investimento = indices_basicos['Investimento']
-    Ebit = indices_basicos['Ebit']
     Roe = indices_rentabilidade['Roe']
     Ke = indices_basicos['Ke']
-
-    Eva = Ebit-(Investimento*Custo_MPC)
+    Lucro_Liquido = indices_basicos['Lucro_Liquido']
+    Eva = Lucro_Liquido-(Investimento*Custo_MPC)
     Spread = Roe-Ke
     return {
         'Eva'    : Eva,
@@ -361,30 +363,46 @@ def print_dict_2(name, ticker, dataini, datafim, data):
         print(f"  {key}: {value}")
     print()
 
-def rodar_dashboard_multi(preco_corrigido_func, tickers, datas_ini, data_fim):
+def rodar_dashboard_completo(preco_corrigido_func, balanco_func, tickers, tickers_balanco, datas_ini, data_fim, trimestres):
     
-
-    # Pré-carrega dados para não atrasar a interação
-    dados = {}
+    # Pré-carrega dados de preços
+    dados_precos = {}
     for ticker in tickers:
-        dados[ticker] = {}
+        dados_precos[ticker] = {}
         for dataini in datas_ini:
             df = preco_corrigido_func(ticker, dataini, data_fim)
             df['data'] = pd.to_datetime(df['data'])
             df = df.sort_values('data')
             df['preco_norm'] = df['fechamento'] / df['fechamento'].iloc[0] * 100
-            dados[ticker][dataini] = df
+            dados_precos[ticker][dataini] = df
+
+    # Pré-carrega dados de balanço para o gráfico de rosca
+    dados_balanco = {}
+    for ticker in tickers_balanco:
+        dados_balanco[ticker] = {}
+        for trimestre in trimestres:
+            df = balanco_func(ticker, trimestre)
+            basicos = indices_basicos(df)
+            dividas = indices_dividas(basicos)
+            dados_balanco[ticker][trimestre] = dividas
 
     app = dash.Dash(__name__)
 
     app.layout = html.Div([
-        html.H2("Dashboard: Preços Normalizados — Múltiplos Tickers"),
+        html.Div([
+        html.H1("Dashboard Financeiro", style={'textAlign': 'center', 'marginBottom': '5px'}),
+        html.H4("Análise de Ações – MRFG3, JBSS3, BEEF3, BRFS3, IBOV",
+                 style={'textAlign': 'center', 'color': '#CCCCCC', 'marginTop': '0px'})
+    ], style={'backgroundColor': '#303030', 'padding': '10px', 'borderRadius': '8px'}),
+        # Seção de Preços Normalizados
+        html.Div([
+        html.H2("1. Preços Normalizados — Múltiplos Tickers"),
         html.Div([
             html.Label("Escolha os tickers:"),
             dcc.Dropdown(
                 id='ticker-dropdown',
                 options=[{'label': t, 'value': t} for t in tickers],
-                value=[tickers[0]],  # valor inicial como lista
+                value=[tickers[0]],
                 multi=True,
                 clearable=False,
                 style={'width': '48%'}
@@ -399,43 +417,125 @@ def rodar_dashboard_multi(preco_corrigido_func, tickers, datas_ini, data_fim):
             )
         ], style={'display': 'flex', 'justifyContent': 'space-between'}),
         dcc.Graph(id='grafico-precos')
-    ])
+    ], style={'marginBottom': '30px', 'padding': '10px', 'backgroundColor': '#1f1f1f', 'borderRadius': '8px'}),
 
+        
+        # Seção de Análise de Dívidas
+        html.Div([
+        html.H2("2. Composição Financeira (Dívidas vs Lucro)"),
+        html.Div([
+            html.Label("Escolha o ticker:"),
+            dcc.Dropdown(
+                id='ticker-ros-dropdown',
+                options=[{'label': t, 'value': t} for t in tickers_balanco],
+                value=tickers_balanco[0],
+                clearable=False,
+                style={'width': '48%'}
+            ),
+            html.Label("Escolha o trimestre:"),
+            dcc.Dropdown(
+                id='trimestre-dropdown',
+                options=[{'label': t, 'value': t} for t in trimestres],
+                value=trimestres[0],
+                clearable=False,
+                style={'width': '48%', 'marginTop': '10px'}
+            )
+        ], style={'display': 'flex', 'justifyContent': 'space-between'}),
+        dcc.Graph(id='grafico-rosca')
+    ], style={'padding': '10px', 'backgroundColor': '#1f1f1f', 'borderRadius': '8px'}),
+        ])
+    
+
+    # Callback para o gráfico de preços
     @app.callback(
         Output('grafico-precos', 'figure'),
         Input('ticker-dropdown', 'value'),
         Input('periodo-dropdown', 'value')
     )
-    def atualizar_grafico(tickers_selecionados, periodo_selecionado):
+    def atualizar_grafico_precos(tickers_selecionados, periodo_selecionado):
         fig = go.Figure()
-        # garantir que tickers_selecionados seja lista
+        data_fim = datetime.now().strftime('%Y-%m-%d')  # Data atual como padrão
+        
         if isinstance(tickers_selecionados, str):
             tickers_selecionados = [tickers_selecionados]
 
         for ticker in tickers_selecionados:
-            df = dados[ticker][periodo_selecionado]
-            fig.add_trace(go.Scatter(
-                x=df['data'],
-                y=df['preco_norm'],
-                mode='lines',
-                name=f'{ticker} ({periodo_selecionado})',
-                line=dict(width=3)
-            ))
+            try:
+                df = preco_corrigido(ticker, periodo_selecionado, data_fim)
+                df['data'] = pd.to_datetime(df['data'])
+                df = df.sort_values('data')
+                
+                preco_inicial = df['fechamento'].iloc[0]
+                df['preco_norm'] = (df['fechamento'] / preco_inicial) * 100
+                
+                fig.add_trace(go.Scatter(
+                    x=df['data'],
+                    y=df['preco_norm'],
+                    name=f'{ticker}',
+                    line=dict(width=2),
+                    hovertemplate='Data: %{x|%d/%m/%Y}<br>Valor: %{y:.1f} (base 100)'
+                ))
+            
+            except Exception as e:
+                print(f"Erro ao processar {ticker}: {str(e)}")
 
         fig.update_layout(
-            title=f'Preços Normalizados — Período {periodo_selecionado}',
+            title=f'Performance Relativa (Base 100) desde {periodo_selecionado}',
             xaxis_title='Data',
-            yaxis_title='Índice Normalizado (Base 100)',
+            yaxis_title='Valor Normalizado',
             template='plotly_white',
-            hovermode='x unified',
+            hovermode='x unified'
         )
+        
+        return fig
+    
+    
+
+    # Callback para o gráfico de rosca 
+    @app.callback(
+        Output('grafico-rosca', 'figure'),
+        Input('ticker-ros-dropdown', 'value'),
+        Input('trimestre-dropdown', 'value')
+    )
+    
+    def atualizar_grafico_rosca(ticker_selecionado, trimestre_selecionado):
+        dividas = dados_balanco[ticker_selecionado][trimestre_selecionado]
+        
+        # Apenas os dois componentes 
+        labels = ['Dívida Terceiros', 'Dívida Acionistas']
+        values = [
+            dividas['Divida_Terceiros'],
+            dividas['Divida_Acionistas']
+        ]
+        
+        # Cores ajustadas (vermelho para dívida, azul para patrimônio líquido)
+        colors = ['#FF6347', '#013A63']
+        
+        fig = go.Figure(data=[go.Pie(
+            labels=labels,
+            values=values,
+            hole=.5,
+            marker_colors=colors,
+            textinfo='percent+value',
+            insidetextorientation='radial',
+            texttemplate='%{label}<br>%{value:,.0f}<br>(%{percent})'
+        )])
+        
+        fig.update_layout(
+            title=f'Estrutura de Capital: {ticker_selecionado} ({trimestre_selecionado})',
+            annotations=[dict(
+                text=f"Endividamento<br>Total:<br>{sum(values):,.0f}",
+                x=0.5, y=0.5,
+                font_size=16,
+                showarrow=False
+            )],
+            template='plotly_dark',
+            margin=dict(t=60, b=30)  # Ajuste de margens
+        )
+        
         return fig
 
     app.run(debug=False)
-
-# =========================
-# 6. Função Principal
-# =========================
 
 
 def main():
@@ -446,11 +546,13 @@ def main():
     list_ticker.append("BEEF3")
     list_ticker.append("BRFS3")
     
+
     list_tri = []
     list_tri.append("20234T")
     list_tri.append("20244T")
       
     list_df = []
+    list_dividas = []
     list_liquidez = []
     list_giro_tesouraria = []
     list_endividamento = []
@@ -471,6 +573,7 @@ def main():
             list_df.append(df)
 
             basicos = indices_basicos(df)
+            dividas = indices_dividas(basicos)
             liquidas = indices_liquidez(basicos)
             giro = indices_giro_tesouraria(basicos)
             endividamento = indices_endividamento(basicos)
@@ -481,7 +584,7 @@ def main():
             valor_agregado = indices_valor_agregado(basicos, juros, rentabilidade)
 
             list_basicos.append(basicos)
-
+            list_dividas.append(dividas)
             list_liquidez.append(liquidas)
             list_giro_tesouraria.append(giro)
             list_endividamento.append(endividamento)
@@ -516,6 +619,9 @@ def main():
     df_valor_agregado = pd.DataFrame(list_valor_agregado)
     df_valor_agregado['Ticker'] = ticker_repetidos
     print(df_valor_agregado)
+    df_dividas = pd.DataFrame(list_dividas)
+    df_dividas['Ticker'] = ticker_repetidos
+    print(df_dividas)
     
 
     list_ticker_2 = []
@@ -544,11 +650,16 @@ def main():
                 list_valor_acao.append(valores_acao)
                 print_dict_2("Valores da Ação", ticker, dataini, datafim, valores_acao)
     
-    rodar_dashboard_multi(
+
+    rodar_dashboard_completo(
     preco_corrigido_func=preco_corrigido,
+    balanco_func=balanco,
     tickers=list_ticker_2,
+    tickers_balanco=list_ticker,
     datas_ini=list_data_ini,
-    data_fim=list_data_fim[0])
+    data_fim=list_data_fim[0],
+    trimestres=list_tri
+)
 
   
 main()
